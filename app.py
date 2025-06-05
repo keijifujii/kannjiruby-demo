@@ -1,4 +1,4 @@
-# app.py
+# app.py 2025-06-05
 
 from flask import Flask, render_template, request, send_file, redirect, url_for, flash
 from docx import Document as DocxReader, Document as DocxWriter
@@ -47,42 +47,67 @@ def load_kanji_grade_mapping(csv_path='kanji_grade.csv'):
 
 KANJI_GRADE = load_kanji_grade_mapping('kanji_grade.csv')
 
+
+
+
 # -------------------------------------------
-# 4) 修正後：連続漢字列をまとめて熟語単位で処理し、
-#    学年 threshold に応じてルビを付与する関数
+# 5) 改良版２：漢字＋送り仮名（ひらがな）がある場合は
+#    振り仮名を「漢字部分だけ」に付与し、送り仮名はそのまま残す
 # -------------------------------------------
 def annotate_by_grade(text: str, threshold: int) -> str:
     """
-    1) 正規表現 r'[\u4E00-\u9FFF]+' で
-       連続する漢字の塊（熟語候補）をマッチさせる。
-    2) マッチする each 「漢字列 s」について:
-       - 各文字 ch の学年 grade = KANJI_GRADE.get(ch) を取得
-       - ・mapping に ch がなければ grade is None → 常用漢字外 とみなし、必ずルビを振る
-         ・mapping があって、かつすべての grade < threshold → 置き換えずそのまま s を返す
-         ・上記以外（少なくとも1文字が grade ≥ threshold） → s の熟語全体にルビを付与
-    3) kakasi で s の読み（ひらがな）を取り、"s（読み）" に置き換える
+    ① 「漢字列＋直後のひらがな（送り仮名）」を優先的にマッチ。
+       振り仮名を付けるのは漢字部分だけとし、送り仮名そのものはルビ外に出す。
+    ② マッチしない「純粋な連続漢字」は、従来どおり漢字丸ごとルビを付与する。
     """
-    def replace_match(match: re.Match) -> str:
-        s = match.group()  # 例：'仮想環境' や '学校' など、連続する漢字の塊
-        grades = [KANJI_GRADE.get(ch) for ch in s]
+    # 1) パターン：グループ1＝漢字+ひらがな、グループ2＝連続漢字
+    pattern = re.compile(r'([\u4E00-\u9FFF]+)([ぁ-ゔ]+)|([\u4E00-\u9FFF]+)')
 
-        # ① もし「どれか1文字でも mapping にない＝grade is None」であれば、
-        #    常用漢字外を含む とみなして、一律でルビを付ける
-        if any(g is None for g in grades):
+    def replace_match(match: re.Match) -> str:
+        # ── グループ1：漢字＋送り仮名（ひらがな）がマッチしている場合 ──
+        if match.group(1) and match.group(2):
+            kanji_part = match.group(1)      # 例：「政治的」, 「議会」, 「予算」など
+            okurigana  = match.group(2)      # 例：「に」, 「は」, 「局は」など
+            full_word  = kanji_part + okurigana
+
+            # 学年判定は「漢字部分だけ」で行う
+            grades = [KANJI_GRADE.get(ch) for ch in kanji_part]
+
+            # （A）もし漢字部分にマッピングがない文字（常用外など）があれば、
+            #     漢字部分だけにルビを付与し、送り仮名はそのまま後ろに付ける
+            if any(g is None for g in grades):
+                reading = _converter.do(kanji_part)  # 例："せいじてき"
+                return f"{kanji_part}（{reading}）{okurigana}"
+
+            # （B）すべての漢字が threshold 未満（もっと早い学年で習う）なら、
+            #     漢字＋送り仮名をそのまま返す（ルビ不要）
+            if all(g < threshold for g in grades):
+                return full_word
+
+            # （C）それ以外（少なくとも1文字が grade ≥ threshold）なら、
+            #     漢字部分だけを kakasi で読みを取得し、ルビを付ける
+            reading = _converter.do(kanji_part)  # 例："せいじてき"
+            return f"{kanji_part}（{reading}）{okurigana}"
+
+        # ── グループ1 がマッチせず、グループ2：純粋な連続漢字がマッチした場合 ──
+        else:
+            s = match.group(3)  # 例：「学校」「環境」「勉強」など
+
+            grades = [KANJI_GRADE.get(ch) for ch in s]
+            # （A）マッピングにない文字があれば、漢字全部にルビ
+            if any(g is None for g in grades):
+                reading = _converter.do(s)
+                return f"{s}（{reading}）"
+            # （B）すべての文字が threshold 未満なら、そのまま返す（ルビ不要）
+            if all(g < threshold for g in grades):
+                return s
+            # （C）それ以外は、漢字全体を kakasi で読みを取得し、ルビを付与
             reading = _converter.do(s)
             return f"{s}（{reading}）"
 
-        # ② すべての文字が「grade < threshold（学年より前に学ぶ漢字）」ならそのまま
-        if all(g < threshold for g in grades):
-            return s
+    return pattern.sub(replace_match, text)
 
-        # ③ それ以外（少なくとも1文字が grade ≥ threshold）なら
-        #    熟語全体を kakasi で読みをとり、"熟語（読み）" に置き換える
-        reading = _converter.do(s)
-        return f"{s}（{reading}）"
 
-    # テキスト全体から「連続漢字列」をすべて置き換える
-    return re.sub(r'[\u4E00-\u9FFF]+', replace_match, text)
 
 
 # -------------------------------------------
