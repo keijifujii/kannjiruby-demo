@@ -1,0 +1,6 @@
+Flask==3.0.3
+python-docx==1.1.2
+fugashi>=1.2.0
+unidic-lite>=1.0.8
+jaconv>=0.3.10
+gunicorn==21.2.0
